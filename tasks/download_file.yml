@@ -72,7 +72,7 @@
   register: file_host_check_windows
   when: ansible_os_family == "Windows"
 
-- name: Copy file to windows VM (Windows)
+- name: Copy file to VM (Windows)
   ansible.windows.win_copy:
     src: "{{ ludus_install_path | default('/opt/ludus') }}/resources/{{ role_name }}/{{ ludus_download_file_name }}"
     dest: "{{ ludus_download_file_host_path }}\\{{ ludus_download_file_name }}"
@@ -91,7 +91,7 @@
   register: file_host_check_linux
   when: not ansible_os_family == "Windows"
 
-- name: Copy file to windows VM (Linux/macOS)
+- name: Copy file to VM (Linux/macOS)
   ansible.builtin.copy:
     src: "{{ ludus_install_path | default('/opt/ludus') }}/resources/{{ role_name }}/{{ ludus_download_file_name }}"
     dest: "{{ ludus_download_file_host_path }}/{{ ludus_download_file_name }}"

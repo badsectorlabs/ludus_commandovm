@@ -188,9 +188,6 @@
 #     line: Import-Module Boxstarter.Chocolatey
 #     insertbefore: $asciiArt = @'
 
-- name: Wtfbbq
-  ansible.builtin.script: wtfbbq.ps1
-
 - name: Add file logging to install.ps1
   community.windows.win_lineinfile:
     path: C:\ludus\commandovm\commando-vm-main\install.ps1
