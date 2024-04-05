@@ -1,0 +1,226 @@
+---
+- name: Gather facts if needed
+  ansible.builtin.setup:
+  when: ansible_os_family is not defined
+
+- name: Check for Windows
+  ansible.builtin.fail:
+    msg: Commando VM only supports Windows
+  when: ansible_os_family != "Windows"
+
+- name: Get Windows version
+  ansible.windows.win_shell: |
+    $os = Get-CimInstance -ClassName Win32_OperatingSystem
+    $version = [System.Version]$os.Version
+    $versionString = "$($version.Major).$($version.Minor)"
+    Write-Output $versionString
+  register: win_version_output
+
+- name: Ensure host is >= Windows 10
+  ansible.builtin.assert:
+    that: (win_version_output.stdout | trim) is version_compare('10', '>')
+    fail_msg: "Host is not running Windows 10 or newer"
+    success_msg: "Host is running Windows {{ win_version_output.stdout | trim }}"
+
+- name: Get PowerShell version
+  ansible.windows.win_shell: $PSVersionTable.PSVersion.Major
+  register: ps_version_output
+
+- name: Ensure host is >= Windows 10
+  ansible.builtin.assert:
+    that: (ps_version_output.stdout | trim) is version_compare('5', '>=')
+    fail_msg: "Host is not running Powershell 5 or newer"
+    success_msg: "Host is running Powershell {{ ps_version_output.stdout | trim }}"
+
+
+## win_disk_facts is a very new module, and users may not have it, so we'll do the disk work with some powershell and regex
+# - name: Retrieve disk facts
+#   ansible.windows.win_disk_facts:
+#   register: disk_facts
+
+# - name: Ensure disk capacity is at least 60 GB
+#   ansible.builtin.assert:
+#     that: disk_facts.disks.C.SizeTotal > 60 * 1024 * 1024 * 1024
+#     fail_msg: "Disk capacity is insufficient (< 60 GB)"
+#     success_msg: "Disk capacity is sufficient (>= 60 GB)"
+
+- name: Retrieve disk capacity using PowerShell
+  ansible.windows.win_shell: Get-WmiObject Win32_LogicalDisk | Select-Object DeviceID, @{Name="SizeTotal";Expression={[math]::Round($_.Size, 2)}}
+  register: disk_capacity
+
+- name: Show Disk size output
+  ansible.builtin.debug:
+    var: disk_capacity.stdout_lines
+
+- name: Parse disk capacity information
+  ansible.builtin.set_fact:
+    # "I want to sit down and just chop it up, Benihana"
+    # Take all lines after the first 3, select only non-blank lines, use regex to extract the drive name and size, split those on the space and return the list
+    disk_capacity_info: "{{ disk_capacity.stdout_lines[3:] | select() | map('regex_replace', '^(\\S+)\\s+(\\d+)$', '\\1 \\2') | map('split', ' ') | list }}"
+
+- name: Show bytes of first non-zero size Disk
+  ansible.builtin.debug:
+    # Grab the first disk with size > 0 and extract it's value in bytes
+    msg: "{{ (disk_capacity_info | selectattr('1', 'gt', '0'))[0][1] }}"
+
+- name: Ensure disk capacity is at least 60 GB
+  ansible.builtin.assert:
+    that: ((disk_capacity_info | selectattr('1', 'gt', '0'))[0][1] | int) > (60 * 1024 * 1024 * 1024)
+    fail_msg: "Disk capacity is insufficient (< 60 GB)"
+    success_msg: "Disk capacity is sufficient (>= 60 GB)"
+
+- name: Retrieve memory size
+  ansible.windows.win_shell: (Get-WmiObject -Class Win32_OperatingSystem).TotalVisibleMemorySize
+  register: memory_size_output
+
+- name: Ensure memory is at least 2 GB
+  ansible.builtin.assert:
+    that: memory_size_output.stdout | int > (2 * 1024 * 1024)
+    fail_msg: "Memory is insufficient (< 2 GB)"
+    success_msg: "Memory is sufficient (>= 2 GB)"
+
+- name: Verify internet connectivity
+  ansible.windows.win_wait_for:
+    host: boxstarter.org
+    port: 443
+    state: started
+    delay: 0
+    timeout: 2
+
+- name: Disable Windows Updates
+  ansible.builtin.script:
+    cmd: disable_updates.ps1
+
+- name: Disable Defender 1
+  ansible.windows.win_powershell:
+    script: |
+      Add-MpPreference -ExclusionPath 'C:\'
+
+- name: Execute PowerShell script to check tamper protection status
+  ansible.windows.win_shell: |
+    (Get-MpComputerStatus).IsTamperProtected
+  register: tamper_protection_result
+
+- name: Set fact based on tamper protection status
+  ansible.builtin.set_fact:
+    tamper_protection_enabled: "{{ true if 'True' in tamper_protection_result.stdout else false }}"
+
+- name: Disable Defender 2
+  ansible.builtin.script:
+    cmd: disable_defender.bat
+  register: disable_defender
+  when: tamper_protection_enabled
+
+- name: Reboot after disabling Defender
+  ansible.windows.win_reboot:
+  when: tamper_protection_enabled
+
+- name: Disable ludus dynamic wallpaper
+  ansible.windows.win_powershell:
+    script: |
+      Remove-ItemProperty -Path HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run -Name bginfo
+  when: ludus_commandovm_use_commandovm_wallpaper
+
+- name: Download Commando VM Installer Script
+  ansible.builtin.include_tasks:
+    file: download_file.yml
+  vars:
+    ludus_download_file_name: commando-vm-main.zip
+    ludus_download_file_url: https://github.com/mandiant/commando-vm/archive/refs/heads/main.zip
+    ludus_download_file_host_path: C:\ludus\commandovm
+
+- name: Unzip commando files
+  community.windows.win_unzip:
+    src: C:\ludus\commandovm\commando-vm-main.zip
+    dest: C:\ludus\commandovm
+    creates: C:\ludus\commandovm\commando-vm-main\install.ps1
+
+- name: Fix commando bug https://github.com/mandiant/commando-vm/issues/313
+  ansible.windows.win_shell: |
+    New-Item -ItemType Directory -Force -Path C:\ProgramData\_VM
+    Copy-Item C:\ludus\commandovm\commando-vm-main\Profiles\Default.xml -Destination C:\ProgramData\_VM\packages.xml -Force
+
+- name: Check that we have some authentication method
+  ansible.builtin.fail:
+    msg: "You must set ludus_commandovm_nopassword to true or set a password with the variable ludus_commandovm_password"
+  when: not ludus_commandovm_nopassword and ludus_commandovm_password is not defined
+
+- name: Write start-install.ps1
+  community.windows.win_lineinfile:
+    path: C:\ludus\commandovm\start-install.ps1
+    line: C:\ludus\commandovm\commando-vm-main\install.ps1 -cli -noPassword -skipChecks
+    create: true
+  when: ludus_commandovm_nopassword
+
+- name: Write start-install.ps1
+  community.windows.win_lineinfile:
+    path: C:\ludus\commandovm\start-install.ps1
+    line: C:\ludus\commandovm\commando-vm-main\install.ps1 -cli -password {{ ludus_commandovm_password }} -skipChecks
+    create: true
+  when: not ludus_commandovm_nopassword and ludus_commandovm_password is not defined
+
+# - name: Wait for the failed shutdown (because we ran install.ps1 headless?)
+#   ansible.windows.win_wait_for:
+#     path: C:\ProgramData\chocolatey\logs\chocolatey.log
+#     regex: "Command.*shutdown.exe.*exited with '1116'"
+#     state: present
+#     delay: 120
+#     sleep: 10
+#     timeout: 300
+#   register: shutdown_check
+
+# - name: Debug
+#   ansible.builtin.debug:
+#     var: shutdown_check
+
+# - name: Reboot to keep the install going
+#   ansible.windows.win_reboot:
+
+# - name: Patch install.ps1 1 (https://github.com/mandiant/commando-vm/issues/316)
+#   community.windows.win_lineinfile:
+#     path: C:\ludus\commandovm\commando-vm-main\install.ps1
+#     line: $BoxStarter.RebootOk=$true
+#     insertbefore: $asciiArt = @'
+
+# - name: Patch install.ps1 2 (https://github.com/mandiant/commando-vm/issues/316)
+#   community.windows.win_lineinfile:
+#     path: C:\ludus\commandovm\commando-vm-main\install.ps1
+#     line: Import-Module Boxstarter.Chocolatey
+#     insertbefore: $asciiArt = @'
+
+- name: Wtfbbq
+  ansible.builtin.script: wtfbbq.ps1
+
+- name: Add file logging to install.ps1
+  community.windows.win_lineinfile:
+    path: C:\ludus\commandovm\commando-vm-main\install.ps1
+    line: Start-Transcript -path C:\commandovm\log.txt -append
+    insertbefore: '.*\$asciiArt = \@.*'
+
+- name: Unrestrict files
+  ansible.windows.win_shell: |
+      Set-ExecutionPolicy Unrestricted -force
+      Get-ChildItem .\ -Recurse | Unblock-File
+  args:
+    chdir: C:\ludus\commandovm\commando-vm-main
+
+- name: Set install as a Run key program
+  ansible.windows.win_powershell:
+    script: |
+      Set-ItemProperty HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run -Name commando -Value 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe -NoExit -ExecutionPolicy Unrestricted -NonInteractive -File "C:\ludus\commandovm\start-install.ps1"'
+
+- name: Reboot to start install
+  ansible.windows.win_reboot:
+
+- name: Remove the install Run key
+  ansible.windows.win_powershell:
+    script: |
+      Remove-ItemProperty -Path HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run -Name commando
+
+- name: Start the wait loop
+  ansible.builtin.include_tasks:
+    file: wait_for_commando.yml
+
+- name: Success
+  ansible.builtin.debug:
+    msg: "Commando VM install has finished. Check the VM for a log of any packages that had errors."

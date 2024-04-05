@@ -1,0 +1,12 @@
+ludus:
+  - vm_name: "{{ range_id }}-commando"
+    hostname: "{{ range_id }}-COMMANDO"
+    template: win11-22h2-x64-enterprise-template
+    vlan: 99
+    ip_last_octet: 4
+    ram_gb: 8
+    cpus: 4
+    windows:
+      install_additional_tools: false
+    roles:
+      - badsectorlabs.ludus_commandovm

@@ -1,0 +1,22 @@
+---
+dependencies: []
+
+galaxy_info:
+  role_name: ludus_commandovm
+  author: badsectorlabs
+  description: An Ansible Role that sets up Commando VM on Windows >= 10 hosts
+  company: Bad Sector Labs
+  license: GPLv3
+  min_ansible_version: "2.10"
+  platforms:
+    - name: Windows
+      versions:
+        - "2019"
+        - "2022"
+  galaxy_tags:
+    - hacking
+    - offsec
+    - commando
+
+collections:
+  - community.windows
